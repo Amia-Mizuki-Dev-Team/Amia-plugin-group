@@ -1,4 +1,5 @@
 import asyncio
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -24,6 +25,8 @@ class FakeEvent:
     def __init__(self, text: str = "", user_id: int = 1) -> None:
         self.text = text
         self.user_id = user_id
+        self.self_id = "bot-r009"
+        self.group_id = "group-r009"
 
     def get_plaintext(self) -> str:
         return self.text
@@ -142,22 +145,95 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
             await self.run_command("公告 增加 sixth"), "位置已满(5/5)"
         )
 
-    async def test_configured_real_qq_can_manage_virtual_session(self) -> None:
+    async def test_configured_canonical_id_can_manage_virtual_session(self) -> None:
         original_resolver = self.plugin.get_real_qq
+        original_admin_ids = self.plugin.NOTICE_ADMIN_QQ_IDS
+        self.plugin.NOTICE_ADMIN_QQ_IDS = {"canonical-r009"}
         self.plugin.get_real_qq = lambda user_id: (
-            "2338680148" if user_id == "9046299062" else None
+            "canonical-r009" if user_id == "user-openid-r009" else None
         )
         try:
             self.assertEqual(
                 await self.run_command(
                     "公告 增加 from-real-qq",
                     superuser=False,
-                    user_id=9046299062,
+                    user_id="user-openid-r009",
                 ),
                 "写入成功。",
             )
         finally:
             self.plugin.get_real_qq = original_resolver
+            self.plugin.NOTICE_ADMIN_QQ_IDS = original_admin_ids
+
+    async def test_permission_provider_receives_scoped_release009_identity(self) -> None:
+        calls: dict[str, object] = {}
+
+        class PermissionProvider:
+            async def has_permission(
+                self, identity: object, permission: str, context_id: str
+            ) -> bool:
+                calls["identity"] = identity
+                calls["permission"] = permission
+                calls["context_id"] = context_id
+                return True
+
+        class IdentityResolver:
+            async def resolve_identity(self, key: object) -> object:
+                calls["key"] = key
+                return SimpleNamespace(canonical_user_id="canonical-r009")
+
+        class Registry:
+            permission = PermissionProvider()
+            resolver = IdentityResolver()
+
+            def get_permission_provider(self, name: str) -> object | None:
+                return self.permission if name == "static" else None
+
+            def get_identity_resolver(self) -> object:
+                return self.resolver
+
+            def get_audit_logger(self, name: str) -> None:
+                return None
+
+        class Core:
+            registry = Registry()
+
+            @staticmethod
+            def UserIdentityKey(**kwargs: str) -> object:
+                return SimpleNamespace(**kwargs)
+
+            @staticmethod
+            async def call_provider_safe(func: object, *args: object, **_: object) -> object:
+                value = await func(*args)
+                return SimpleNamespace(success=True, value=value)
+
+        original_core = sys.modules.get("amia_core")
+        original_admin_ids = self.plugin.NOTICE_ADMIN_QQ_IDS
+        self.plugin.NOTICE_ADMIN_QQ_IDS = set()
+        sys.modules["amia_core"] = Core
+        try:
+            self.assertEqual(
+                await self.run_command(
+                    "公告 增加 provider-authorized",
+                    superuser=False,
+                    user_id="user-openid-r009",
+                ),
+                "写入成功。",
+            )
+        finally:
+            self.plugin.NOTICE_ADMIN_QQ_IDS = original_admin_ids
+            if original_core is None:
+                sys.modules.pop("amia_core", None)
+            else:
+                sys.modules["amia_core"] = original_core
+
+        key = calls["key"]
+        assert isinstance(key, SimpleNamespace)
+        self.assertEqual(key.self_id, "bot-r009")
+        self.assertEqual(key.user_id, "user-openid-r009")
+        self.assertEqual(calls["permission"], "group.notice.manage")
+        self.assertEqual(calls["context_id"], "onebot:bot-r009:group:group-r009")
+        self.assertEqual(calls["identity"].canonical_user_id, "canonical-r009")
 
     async def test_view_edit_delete_and_unknown_command(self) -> None:
         save_json(self.notices_file, ["first", "second"])

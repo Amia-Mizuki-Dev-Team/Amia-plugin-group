@@ -5,12 +5,12 @@ import sys
 from pathlib import Path
 from typing import Optional
 
-from nonebot import logger, on_message
+from nonebot import logger, on_message, require
 from nonebot.adapters.onebot.v11 import Bot, GroupMessageEvent, MessageEvent
 from nonebot.matcher import Matcher
 from nonebot.message import run_postprocessor
 from nonebot.permission import SUPERUSER
-from nonebot.plugin import PluginMetadata
+from nonebot.plugin import PluginMetadata, get_plugin
 
 from .logic import (
     MAX_NOTICE_LENGTH,
@@ -30,13 +30,45 @@ ARGUMENT_PART_INDEX = 2
 MIN_UPDATE_PARTS = 2
 
 # QQ 官方 Bot 的事件 user_id 可能是 Gensokyo 会话 ID，而不是 QQ 号。
-# 允许通过环境变量扩展；当前部署的公告管理员为用户提供的 QQ 号。
+# Explicit environment selectors are supported, but no real account is
+# hard-coded. The normal authorization path is the Core PermissionProvider.
 NOTICE_ADMIN_QQ_IDS = {
     value.strip()
-    for value in os.getenv("AMIA_NOTICE_ADMIN_QQ_IDS", "2338680148").split(",")
+    for value in os.getenv("AMIA_NOTICE_ADMIN_QQ_IDS", "").split(",")
     if value.strip()
 }
 get_real_qq = None
+
+
+def _core_contract():
+    # Tests and lightweight deployments may load this plugin without loading
+    # the optional core plugin. Avoid calling NoneBot's ``require`` in that
+    # case: it emits a misleading failed-plugin stack trace even though the
+    # permission/audit integration is intentionally optional and fail-closed.
+    for module_name in ("amia_core", "src.plugins.amia_core"):
+        module = sys.modules.get(module_name)
+        if module is not None:
+            return module
+    # ``require`` logs an error when the optional plugin was never discovered.
+    # Check NoneBot's registry first so an isolated plugin test remains quiet
+    # while a configured deployment can still lazy-load the Core plugin.
+    try:
+        if get_plugin("amia_core") is None:
+            from nonebot.plugin.manager import _managers
+
+            available = {
+                plugin_id
+                for manager in _managers
+                for plugin_id in manager.available_plugins
+            }
+            if "amia_core" not in available:
+                return None
+    except Exception:  # noqa: BLE001 - optional provider boundary
+        return None
+    try:
+        return require("amia_core")
+    except Exception:  # noqa: BLE001 - optional provider boundary
+        return None
 
 
 def _notice_identity_ids(event: MessageEvent) -> set[str]:
@@ -63,7 +95,33 @@ def _notice_identity_ids(event: MessageEvent) -> set[str]:
 async def _is_notice_admin(bot: Bot, event: MessageEvent) -> bool:
     if await SUPERUSER(bot, event):
         return True
-    return bool(_notice_identity_ids(event) & NOTICE_ADMIN_QQ_IDS)
+    if NOTICE_ADMIN_QQ_IDS and _notice_identity_ids(event) & NOTICE_ADMIN_QQ_IDS:
+        return True
+
+    core = _core_contract()
+    if core is None:
+        return False
+    registry = getattr(core, "registry", None)
+    provider = registry.get_permission_provider("static") if registry else None
+    resolver = registry.get_identity_resolver() if registry else None
+    if provider is None or resolver is None:
+        return False
+    key = core.UserIdentityKey(
+        self_id=str(getattr(event, "self_id", "")),
+        user_id=str(getattr(event, "user_id", "")),
+    )
+    resolved = await core.call_provider_safe(resolver.resolve_identity, key, timeout=0.5)
+    if not resolved.success:
+        return False
+    context_id = f"onebot:{key.self_id}:group:{event.group_id}"
+    decision = await core.call_provider_safe(
+        provider.has_permission,
+        resolved.value,
+        "group.notice.manage",
+        context_id,
+        timeout=0.5,
+    )
+    return bool(decision.success and decision.value)
 
 # --- 插件元数据 ---
 __plugin_meta__ = PluginMetadata(
@@ -134,7 +192,36 @@ async def _show_notices(notices: list[str], argument: str | None) -> None:
     )
 
 
-async def _add_notice(notices: list[str], content: str | None) -> None:
+async def _audit_notice_action(event: MessageEvent, action: str) -> None:
+    core = _core_contract()
+    if core is None:
+        return
+    registry = getattr(core, "registry", None)
+    audit = registry.get_audit_logger("sqlite") if registry else None
+    resolver = registry.get_identity_resolver() if registry else None
+    if audit is None or resolver is None:
+        return
+    key = core.UserIdentityKey(
+        self_id=str(getattr(event, "self_id", "")),
+        user_id=str(getattr(event, "user_id", "")),
+    )
+    resolved = await core.call_provider_safe(resolver.resolve_identity, key, timeout=0.5)
+    if not resolved.success:
+        return
+    scope = f"onebot:{key.self_id}:group:{event.group_id}"
+    await core.call_provider_safe(
+        audit.log_action,
+        resolved.value,
+        action,
+        f"group:{event.group_id}",
+        {"scope": scope, "target_type": "group", "result": "success"},
+        timeout=0.5,
+    )
+
+
+async def _add_notice(
+    notices: list[str], content: str | None, event: MessageEvent
+) -> None:
     if len(notices) >= MAX_NOTICES:
         await notice_manage.finish(f"位置已满({MAX_NOTICES}/{MAX_NOTICES})")
         return
@@ -149,10 +236,13 @@ async def _add_notice(notices: list[str], content: str | None) -> None:
         await notice_manage.finish("公告保存失败，请稍后重试。")
         return
     notices[:] = candidate
+    await _audit_notice_action(event, "group.notice.add")
     await notice_manage.finish("写入成功。")
 
 
-async def _update_notice(notices: list[str], argument: str | None) -> None:
+async def _update_notice(
+    notices: list[str], argument: str | None, event: MessageEvent
+) -> None:
     sub_parts = argument.split(maxsplit=1) if argument else []
     if (
         len(sub_parts) < MIN_UPDATE_PARTS
@@ -173,10 +263,13 @@ async def _update_notice(notices: list[str], argument: str | None) -> None:
         await notice_manage.finish("公告保存失败，请稍后重试。")
         return
     notices[:] = candidate
+    await _audit_notice_action(event, "group.notice.update")
     await notice_manage.finish(f"公告 {idx + 1} 已修改。")
 
 
-async def _delete_notice(notices: list[str], argument: str | None) -> None:
+async def _delete_notice(
+    notices: list[str], argument: str | None, event: MessageEvent
+) -> None:
     if argument is None:
         await notice_manage.finish("格式错误")
         return
@@ -190,6 +283,7 @@ async def _delete_notice(notices: list[str], argument: str | None) -> None:
         await notice_manage.finish("公告保存失败，请稍后重试。")
         return
     notices[:] = candidate
+    await _audit_notice_action(event, "group.notice.delete")
     await notice_manage.finish("已删除。")
 
 # --- 1. 公告管理指令 (管理员用) ---
@@ -231,11 +325,11 @@ async def manage_notice(bot: Bot, event: MessageEvent) -> None:
 
     notices = load_notices(NOTICES_FILE)
     if command == "增加":
-        await _add_notice(notices, argument)
+        await _add_notice(notices, argument, event)
     elif command == "修改":
-        await _update_notice(notices, argument)
+        await _update_notice(notices, argument, event)
     else:
-        await _delete_notice(notices, argument)
+        await _delete_notice(notices, argument, event)
 
 # --- 2. 核心逻辑：自动广播钩子 ---
 @run_postprocessor
