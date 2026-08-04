@@ -25,8 +25,8 @@ class FakeEvent:
     def __init__(self, text: str = "", user_id: int = 1) -> None:
         self.text = text
         self.user_id = user_id
-        self.self_id = "bot-r009"
-        self.group_id = "group-r009"
+        self.self_id = "bot-r010"
+        self.group_id = "group-r010"
 
     def get_plaintext(self) -> str:
         return self.text
@@ -148,16 +148,16 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
     async def test_configured_canonical_id_can_manage_virtual_session(self) -> None:
         original_resolver = self.plugin.get_real_qq
         original_admin_ids = self.plugin.NOTICE_ADMIN_QQ_IDS
-        self.plugin.NOTICE_ADMIN_QQ_IDS = {"canonical-r009"}
+        self.plugin.NOTICE_ADMIN_QQ_IDS = {"canonical-r010"}
         self.plugin.get_real_qq = lambda user_id: (
-            "canonical-r009" if user_id == "user-openid-r009" else None
+            "canonical-r010" if user_id == "user-openid-r010" else None
         )
         try:
             self.assertEqual(
                 await self.run_command(
                     "公告 增加 from-real-qq",
                     superuser=False,
-                    user_id="user-openid-r009",
+                    user_id="user-openid-r010",
                 ),
                 "写入成功。",
             )
@@ -165,7 +165,7 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
             self.plugin.get_real_qq = original_resolver
             self.plugin.NOTICE_ADMIN_QQ_IDS = original_admin_ids
 
-    async def test_permission_provider_receives_scoped_release009_identity(self) -> None:
+    async def test_permission_provider_receives_scoped_release010_identity(self) -> None:
         calls: dict[str, object] = {}
 
         class PermissionProvider:
@@ -180,7 +180,7 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
         class IdentityResolver:
             async def resolve_identity(self, key: object) -> object:
                 calls["key"] = key
-                return SimpleNamespace(canonical_user_id="canonical-r009")
+                return SimpleNamespace(canonical_user_id="canonical-r010")
 
         class Registry:
             permission = PermissionProvider()
@@ -216,7 +216,7 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
                 await self.run_command(
                     "公告 增加 provider-authorized",
                     superuser=False,
-                    user_id="user-openid-r009",
+                    user_id="user-openid-r010",
                 ),
                 "写入成功。",
             )
@@ -229,11 +229,11 @@ class TestNoticeRuntime(unittest.IsolatedAsyncioTestCase):
 
         key = calls["key"]
         assert isinstance(key, SimpleNamespace)
-        self.assertEqual(key.self_id, "bot-r009")
-        self.assertEqual(key.user_id, "user-openid-r009")
+        self.assertEqual(key.self_id, "bot-r010")
+        self.assertEqual(key.user_id, "user-openid-r010")
         self.assertEqual(calls["permission"], "group.notice.manage")
-        self.assertEqual(calls["context_id"], "onebot:bot-r009:group:group-r009")
-        self.assertEqual(calls["identity"].canonical_user_id, "canonical-r009")
+        self.assertEqual(calls["context_id"], "onebot:bot-r010:group:group-r010")
+        self.assertEqual(calls["identity"].canonical_user_id, "canonical-r010")
 
     async def test_view_edit_delete_and_unknown_command(self) -> None:
         save_json(self.notices_file, ["first", "second"])

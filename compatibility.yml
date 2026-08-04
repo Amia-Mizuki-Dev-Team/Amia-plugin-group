@@ -1,18 +1,19 @@
 gensokyo:
-  last_verified_release: "009"
-  verified_at: "2026-07-25T14:29:00Z"
-  baseline_commit: "7a30e18de2d9e007955973cd17038856a7cf44c3"
+  last_verified_release: "010"
+  verified_at: "2026-08-01"
+  baseline_commit: "77c8c7f75a1432dc4ac58298ed4ad208548c0f38"
   verification:
     status: partial
     evidence: ["tests/test_runtime.py"]
   modes:
-    string_message: false
-    array_message: false
-    use_uin_true: false
-    use_uin_false: false
-    markdown: false
-    keyboard: false
-  automated_tested: false
+    string_message: {status: unverified, evidence: []}
+    array_message: {status: unverified, evidence: []}
+    use_uin_true: {status: unverified, evidence: []}
+    use_uin_false: {status: unverified, evidence: []}
+    markdown: {status: unverified, evidence: []}
+    keyboard: {status: unverified, evidence: []}
+    file_segment: {status: unverified, evidence: []}
+  automated_tested: true
   live_tested: false
   known_issues:
     - "Synthetic PermissionProvider scope test passed; live provider registration, SQLite audit persistence, and Bot delivery were not run."

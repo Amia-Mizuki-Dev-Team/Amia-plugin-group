@@ -115,9 +115,9 @@ sent_history.json
 
 需要多进程部署时，应改用 SQLite 或共享存储，并在存储层增加事务、唯一约束和原子更新。
 
-## Permission 对接目标
+## Permission 对接
 
-当前增删改仍使用 `SUPERUSER`。后续应接入：
+公告增删改优先检查以下权限：
 
 ```text
 group.notice.view
@@ -145,9 +145,9 @@ else:
 
 Provider 缺失、超时或异常时必须默认拒绝。
 
-当前代码尚未完成这项接入，README 中的权限节点是后续开发契约，不代表已经上线。
+当前代码已经通过 `amia-core` 接入 `static` PermissionProvider。Provider 缺失、IdentityResolver 缺失、超时或异常时默认拒绝；NoneBot `SUPERUSER` 仅保留兼容管理路径。
 
-## Audit 对接目标
+## Audit 对接
 
 公告管理操作应写入：
 
@@ -176,7 +176,7 @@ if audit is not None:
 
 不应把完整无关聊天内容写入审计。
 
-当前代码尚未完成 Audit 接入。
+当前代码已经对公告新增、修改和删除调用 `sqlite` AuditLogger。Audit 缺失或失败不会伪造成功记录，也不会把完整聊天正文写入审计。
 
 ## 本轮最终审查结论
 
@@ -188,7 +188,7 @@ if audit is not None:
 - 同一进程内不同目标并发补发时，历史写入会合并最新文件内容，避免互相覆盖；
 - postprocessor 通过 matcher 对象和稳定插件名排除公告插件自身。
 
-后续若需要继续演进，只限于共享事务存储、PermissionProvider 和 AuditLogger 对接；这些不属于本轮公告职责收口，也不代表本仓库应扩展为完整群管框架。
+后续若需要继续演进，只限于共享事务存储和多进程一致性；这不代表本仓库应扩展为完整群管框架。
 
 ## 离线测试
 
@@ -247,8 +247,8 @@ PermissionProvider 与 AuditLogger 尚未接入，因此不在本轮运行测试
 
 - 当前仍使用 JSON 存储；
 - 只保证单进程内的发送去重；
-- 权限仍主要依赖 `SUPERUSER`；
-- 尚未接入 Audit；
+- PermissionProvider 缺失或异常时管理操作默认拒绝；
+- Audit 失败不会阻断已获授权的公告主操作，但会记录失败；
 - 不具备完整群管理能力。
 
 ## 维护边界
@@ -258,3 +258,7 @@ PermissionProvider 与 AuditLogger 尚未接入，因此不在本轮运行测试
 - 不因公告发送失败影响原 matcher；
 - 不把本插件宣传成完整群管理框架；
 - 当前仓库尚未确定公开许可证。
+
+## Release010 发布说明
+
+Release010 测试确认 PermissionProvider 收到字符串形式的 `self_id`、`user_id` 和 `group:<group_id>` 作用域。真实群管理员身份、公告发送、Audit 数据库和多进程部署仍需实机验证。
